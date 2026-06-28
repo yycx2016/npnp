@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::fs;
 use std::path::Path;
 
 use clap::{CommandFactory, Parser};
@@ -7,6 +8,7 @@ use crate::batch::{BatchOptions, export_batch};
 use crate::cli::{Cli, Commands};
 use crate::error::Result;
 use crate::lceda::LcedaClient;
+use crate::merge::extract_lcsc_ids_from_schlib;
 use crate::workflow::{
     download_obj, download_step, export_bundle, export_easyeda_sources, export_pcblib,
     export_schlib_with_options,
@@ -198,6 +200,75 @@ pub async fn run_cli(cli: Cli, invoked_as: &str) -> Result<()> {
             }
             println!("Output directory: {}", summary.output.display());
         }
+        Commands::Refresh {
+            schlib,
+            output,
+            mode,
+            library_name,
+            parallel,
+            lcsc_english,
+        } => {
+            let ids = extract_lcsc_ids_from_schlib(&schlib)?;
+            if ids.is_empty() {
+                println!("No LCSC IDs found in {}", schlib.display());
+                return Ok(());
+            }
+            println!(
+                "Found {} LCSC ID(s) in {} - re-fetching from LCSC...",
+                ids.len(),
+                schlib.display()
+            );
+            let output = output.unwrap_or_else(|| {
+                schlib
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+            });
+            fs::create_dir_all(&output)?;
+            let temp_input = output.join(".refresh_ids.tmp");
+            fs::write(&temp_input, ids.join("\n"))?;
+            let library_name = library_name.or_else(|| {
+                schlib
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(ToOwned::to_owned)
+            });
+            let (schlib_out, pcblib_out, full_out) = match mode.trim().to_ascii_lowercase().as_str() {
+                "schlib" => (true, false, false),
+                "pcblib" => (false, true, false),
+                _ => (false, false, true),
+            };
+            let result = export_batch(
+                &client,
+                BatchOptions {
+                    input: temp_input.clone(),
+                    output: output.clone(),
+                    schlib: schlib_out,
+                    pcblib: pcblib_out,
+                    full: full_out,
+                    merge: true,
+                    append: false,
+                    library_name,
+                    parallel,
+                    continue_on_error: true,
+                    lcsc_english,
+                    force: true,
+                },
+            )
+            .await;
+            let _ = fs::remove_file(&temp_input);
+            let summary = result?;
+            println!(
+                "Refresh complete. Total: {} | Success: {} | Failed: {}",
+                summary.total, summary.success, summary.failed
+            );
+            if !summary.failed_ids.is_empty() {
+                println!("Failed IDs: {}", summary.failed_ids.join(", "));
+            }
+            for path in &summary.generated_files {
+                println!("Generated: {}", path.display());
+            }
+        }
     }
 
     Ok(())
@@ -248,6 +319,11 @@ fn prompt_examples(invoked_as: &str) -> String {
         "Append new parts into an existing merged library",
         &format!(
             "  {command} batch --input new_ids.txt --output generated\\merged --merge --append --library-name MyLib --full --continue-on-error"
+        ),
+        "",
+        "Refresh an existing library by re-fetching all components from LCSC",
+        &format!(
+            "  {command} refresh --schlib generated\\merged\\MyLib.SchLib"
         ),
         "",
 ]

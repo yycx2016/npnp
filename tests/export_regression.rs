@@ -34,6 +34,7 @@ fn fixture_payloads_write_openable_altium_stream_layouts() {
         }],
         footprint_model_name: Some("REGRESSION_QFN".to_string()),
         footprint_library_file: Some("Regression.PcbLib".to_string()),
+        name_override: None,
     };
 
     let component =

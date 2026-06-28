@@ -795,32 +795,41 @@ fn resolve_component_height_mm(
     1.0
 }
 
+const PCBLIB_DESCRIPTION_MAX_CHARS: usize = 256;
+
 fn resolve_footprint_description(payload: &Value, component_name: &str) -> String {
     let preferred = nested_string(payload, &["result", "description"])
         .or_else(|| nested_string(payload, &["description"]))
         .and_then(|text| normalize_footprint_description(&text));
 
-    preferred
+    let description = preferred
         .or_else(|| nested_string(payload, &["result", "display_title"]))
         .or_else(|| nested_string(payload, &["display_title"]))
         .or_else(|| nested_string(payload, &["result", "package"]))
         .or_else(|| nested_string(payload, &["package"]))
         .filter(|text| !text.trim().is_empty())
-        .unwrap_or_else(|| format!("Generated from EasyEDA footprint ({component_name})"))
+        .unwrap_or_else(|| format!("Generated from EasyEDA footprint ({component_name})"));
+
+    truncate_to_char_boundary(&description, PCBLIB_DESCRIPTION_MAX_CHARS).to_string()
+}
+
+fn truncate_to_char_boundary(s: &str, max_chars: usize) -> &str {
+    if s.chars().count() <= max_chars {
+        return s;
+    }
+    let byte_index = s
+        .char_indices()
+        .nth(max_chars)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    &s[..byte_index]
 }
 
 fn normalize_footprint_description(text: &str) -> Option<String> {
-    let parts: Vec<String> = text
-        .split(';')
+    text.split(';')
         .map(str::trim)
-        .filter(|part| !part.is_empty())
+        .find(|part| !part.is_empty())
         .map(ToOwned::to_owned)
-        .collect();
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join("; "))
-    }
 }
 
 fn try_parse_height_from_model_title(title: &str) -> Option<f64> {
@@ -1946,7 +1955,7 @@ mod tests {
     fn normalizes_semicolon_footprint_description() {
         assert_eq!(
             normalize_footprint_description(";UFQFPN-20(3x3);UFQFPN-20;UFQFPN-20_L3.0-W3.0-P0.50"),
-            Some("UFQFPN-20(3x3); UFQFPN-20; UFQFPN-20_L3.0-W3.0-P0.50".to_string())
+            Some("UFQFPN-20(3x3)".to_string())
         );
     }
 

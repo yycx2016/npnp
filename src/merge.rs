@@ -300,6 +300,19 @@ pub(crate) fn normalize_lcsc_id(value: &str) -> Option<String> {
     Some(format!("C{digits}"))
 }
 
+/// Read an existing `.SchLib` and return the deduplicated list of LCSC part IDs
+/// found in each component's `Supplier Part` (or equivalent) parameter.
+pub(crate) fn extract_lcsc_ids_from_schlib(path: &Path) -> Result<Vec<String>> {
+    let records = read_schlib_records(path)?;
+    let mut seen = HashSet::new();
+    let ids = records
+        .into_iter()
+        .filter_map(|record| record.identity)
+        .filter(|id| seen.insert(id.clone()))
+        .collect();
+    Ok(ids)
+}
+
 fn parse_schlib_record(name: String, data: Vec<u8>) -> Result<SchlibRecord> {
     let blocks = parse_block_stream(&data, "SchLib component data")?;
     let mut description = String::new();
@@ -1080,6 +1093,7 @@ mod tests {
                 }],
                 footprint_model_name: None,
                 footprint_library_file: None,
+                name_override: None,
             };
             build_component_from_payload_with_metadata(&payload, name, &metadata)
                 .expect("build component")
@@ -1119,6 +1133,7 @@ mod tests {
             }],
             footprint_model_name: None,
             footprint_library_file: None,
+            name_override: None,
         };
         let ascii_metadata = SchlibMetadata {
             description: Some("ASCII component".to_string()),
@@ -1130,6 +1145,7 @@ mod tests {
             }],
             footprint_model_name: None,
             footprint_library_file: None,
+            name_override: None,
         };
         let ascii_component =
             build_component_from_payload_with_metadata(&payload, "COMP_A", &ascii_metadata)
@@ -1171,6 +1187,7 @@ mod tests {
             }],
             footprint_model_name: None,
             footprint_library_file: None,
+            name_override: None,
         };
         let component = build_component_from_payload_with_metadata(&payload, name, &metadata)
             .expect("build component");

@@ -118,6 +118,26 @@ pub enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// Re-fetch and regenerate libraries from LCSC IDs stored in an existing .SchLib
+    Refresh {
+        /// Path to the existing .SchLib to extract LCSC IDs from
+        #[arg(long, short = 's')]
+        schlib: PathBuf,
+        /// Output directory for the regenerated libraries (defaults to the .SchLib directory)
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Output mode: schlib, pcblib, or full (default: full)
+        #[arg(long, default_value = "full")]
+        mode: String,
+        /// Output library name (defaults to the .SchLib file stem)
+        #[arg(long)]
+        library_name: Option<String>,
+        #[arg(long, default_value_t = 4)]
+        parallel: usize,
+        /// Use English product metadata from lcsc.com for SchLib parameters/description
+        #[arg(long)]
+        lcsc_english: bool,
+    },
 }
 
 #[cfg(test)]

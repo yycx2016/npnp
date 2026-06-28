@@ -9,6 +9,7 @@ use crate::error::{AppError, Result};
 use crate::footprint::build_pcblib_from_payload;
 use crate::lceda::{LcedaClient, SearchItem};
 use crate::lcsc::{LcscClient, LcscProduct};
+use crate::passive_naming::build_passive_component_name;
 use crate::pcblib::{PcbLibrary, write_pcblib};
 use crate::schlib::{
     Component, SchlibMetadata, SchlibParameter, build_component_from_payload_with_metadata,
@@ -205,7 +206,11 @@ fn build_schlib_component_from_detail(
         footprint_library_file,
         english_metadata,
     );
-    build_component_from_payload_with_metadata(symbol_data, component_name, &metadata)
+    let effective_name = metadata
+        .name_override
+        .as_deref()
+        .unwrap_or(component_name);
+    build_component_from_payload_with_metadata(symbol_data, effective_name, &metadata)
 }
 
 pub async fn build_pcblib_library_for_item(
@@ -304,11 +309,6 @@ pub async fn export_schlib_with_options(
         .ok_or(AppError::MissingSymbolOrFootprint)?;
     let symbol_data = client.component_detail(&symbol_uuid).await?;
     let component_name = resolved_symbol_component_name(item, &symbol_data);
-    let out_file = out_dir.join(format!("{}.SchLib", sanitize_filename(&component_name)));
-    if out_file.exists() && !force {
-        return Ok(out_file);
-    }
-
     let (footprint_model_name, footprint_library_file) =
         if let Some(footprint_uuid) = item.footprint_uuid() {
             let footprint_data = client.component_detail(&footprint_uuid).await?;
@@ -337,6 +337,10 @@ pub async fn export_schlib_with_options(
         footprint_library_file.as_deref(),
         english_metadata.as_ref(),
     )?;
+    let out_file = out_dir.join(format!("{}.SchLib", sanitize_filename(component.name())));
+    if out_file.exists() && !force {
+        return Ok(out_file);
+    }
     write_schlib(&component, &out_file)?;
     Ok(out_file)
 }
@@ -423,14 +427,6 @@ fn build_schlib_metadata(
             ])
         });
 
-    if let Some(component_id) = item.lcsc_id() {
-        push_schlib_parameter(
-            &mut parameters,
-            &mut seen_names,
-            "NPNP_COMPONENT_ID",
-            component_id,
-        );
-    }
 
     if let Some(footprint_name) = resolved_footprint_name.as_deref() {
         push_schlib_parameter(
@@ -445,9 +441,6 @@ fn build_schlib_metadata(
         push_lcsc_english_parameters(&mut parameters, &mut seen_names, product);
     } else if let Some(attributes) = item.raw.get("attributes").and_then(Value::as_object) {
         for (name, value) in attributes {
-            if should_skip_schlib_parameter(name) {
-                continue;
-            }
             let Some(value) = value_to_string(value) else {
                 continue;
             };
@@ -457,6 +450,13 @@ fn build_schlib_metadata(
             push_schlib_parameter(&mut parameters, &mut seen_names, name, value);
         }
     }
+
+    let designator_raw = first_non_empty([nested_string(&item.raw, &["attributes", "Designator"])]);
+    let name_override = build_passive_component_name(
+        designator_raw.as_deref().unwrap_or(""),
+        &parameters,
+        item.lcsc_id().as_deref(),
+    );
 
     SchlibMetadata {
         description: english_metadata
@@ -469,7 +469,7 @@ fn build_schlib_metadata(
                     nested_string(&item.raw, &["attributes", "Manufacturer Part"]),
                 ])
             }),
-        designator: first_non_empty([nested_string(&item.raw, &["attributes", "Designator"])]),
+        designator: designator_raw,
         comment: english_metadata
             .and_then(|product| product.mpn.clone())
             .or_else(|| resolve_schlib_comment(item)),
@@ -479,6 +479,7 @@ fn build_schlib_metadata(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned),
+        name_override,
     }
 }
 
@@ -489,7 +490,6 @@ fn push_lcsc_english_parameters(
 ) {
     push_schlib_parameter(parameters, seen_names, "Supplier", "LCSC");
     push_schlib_parameter(parameters, seen_names, "Supplier Part", product.sku.clone());
-    push_schlib_parameter(parameters, seen_names, "LCSC Part", product.sku.clone());
     if let Some(mpn) = product.mpn.as_deref() {
         push_schlib_parameter(parameters, seen_names, "Manufacturer Part", mpn);
     }
@@ -505,6 +505,12 @@ fn push_lcsc_english_parameters(
     if let Some(datasheet_url) = product.datasheet_url.as_deref() {
         push_schlib_parameter(parameters, seen_names, "Datasheet", datasheet_url);
     }
+    push_schlib_parameter(
+        parameters,
+        seen_names,
+        "Supplier Link",
+        format!("https://www.lcsc.com/search?q={}", product.sku),
+    );
     for property in &product.properties {
         push_schlib_parameter(parameters, seen_names, &property.name, &property.value);
     }
@@ -582,11 +588,14 @@ fn push_schlib_parameter(
     if normalized.is_empty() || !seen_names.insert(normalized) {
         return;
     }
+    if should_skip_schlib_parameter(&name) {
+        return;
+    }
     parameters.push(SchlibParameter { name, value });
 }
 
 fn should_skip_schlib_parameter(name: &str) -> bool {
-    const SKIP: [&str; 9] = [
+    const SKIP: [&str; 11] = [
         "Add into BOM",
         "Convert to PCB",
         "Symbol",
@@ -596,6 +605,8 @@ fn should_skip_schlib_parameter(name: &str) -> bool {
         "3D Model Title",
         "3D Model Transform",
         "Name",
+        "LCSC Part",
+        "NPNP_COMPONENT_ID",
     ];
     SKIP.iter().any(|item| item.eq_ignore_ascii_case(name))
 }
